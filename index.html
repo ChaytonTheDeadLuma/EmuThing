@@ -1,0 +1,602 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport"
+ content="width=device-width, initial-scale=1, maximum-scale=1">
+
+<title>TriEmu 4.0</title>
+
+<style>
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: #10121c;
+  color: white;
+  font-family: Arial, sans-serif;
+}
+
+header {
+  padding: 22px;
+  text-align: center;
+  background: #20243a;
+}
+
+h1 { color: #8d9cff; }
+
+main {
+  max-width: 1000px;
+  margin: auto;
+  padding: 16px;
+}
+
+.panel {
+  background: #20243a;
+  border-radius: 14px;
+  padding: 16px;
+  margin: 15px 0;
+}
+
+button, select, input {
+  padding: 12px;
+  margin: 5px;
+  border-radius: 8px;
+  border: none;
+}
+
+button {
+  background: #687cff;
+  color: white;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #8998ff;
+}
+
+#library {
+  display: grid;
+  grid-template-columns:
+    repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.game-card {
+  background: #303650;
+  border-radius: 10px;
+  padding: 12px;
+  overflow-wrap: anywhere;
+}
+
+#game {
+  width: 100%;
+  height: 550px;
+  background: black;
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+#game iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+#status {
+  color: #aeb8ff;
+}
+
+#volume {
+  width: 90%;
+}
+
+.ds-note {
+  display: none;
+  background: #303650;
+  padding: 12px;
+  border-radius: 8px;
+}
+
+body.ds-mode .ds-note {
+  display: block;
+}
+
+body.ds-mode #game {
+  height: 70vh;
+  min-height: 350px;
+}
+
+@media (orientation: landscape) {
+  body.ds-mode #game {
+    height: 85vh;
+  }
+}
+</style>
+</head>
+
+<body>
+
+<header>
+  <h1>TriEmu 4.0</h1>
+  <p>N64 · NDS · SNES · NES</p>
+  <small>Multi-system browser emulator</small>
+</header>
+
+<main>
+
+<section class="panel">
+  <h2>Game Library</h2>
+
+  <div id="library">
+    Loading library...
+  </div>
+
+  <hr>
+
+  <h3>Import Game</h3>
+
+  <input type="file" id="rom"
+   accept=".nes,.z64,.n64,.v64,.nds,.sfc,.smc,.zip">
+
+  <br>
+
+  <select id="system">
+    <option value="n64">Nintendo 64</option>
+    <option value="nds">Nintendo DS</option>
+    <option value="snes">SNES</option>
+    <option value="nes">NES</option>
+  </select>
+
+  <button onclick="addGame()">
+    Add Game
+  </button>
+</section>
+
+<section class="panel">
+  <h2>Audio Settings</h2>
+
+  <label for="volume">Emulator volume</label>
+
+  <br>
+
+  <input type="range" id="volume"
+   min="0" max="100" value="85">
+
+  <span id="volume-label">85%</span>
+
+  <p>
+    DS audio uses the emulator core's audio output.
+    Adjust volume to your preference.
+  </p>
+</section>
+
+<section class="panel">
+  <h2>Controller Settings</h2>
+
+  <p>
+    Connect a compatible controller before launching
+    your game.
+  </p>
+
+  <button onclick="checkController()">
+    Check Controller
+  </button>
+
+  <p id="controller-status">
+    No controller check performed.
+  </p>
+
+  <p>
+    EmulatorJS includes controller detection and
+    button remapping.
+  </p>
+</section>
+
+<section class="panel">
+  <h2>DS Touch Joystick</h2>
+
+  <p>
+    DS games use a virtual joystick-style control
+    that translates movement into D-pad directions.
+  </p>
+
+  <button onclick="enterDSMode()">
+    Enable DS Landscape Mode
+  </button>
+
+  <div class="ds-note">
+    <h3>DS LANDSCAPE MODE</h3>
+    Rotate your phone horizontally.
+    The emulator's touchscreen and virtual controls
+    will be available during gameplay.
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Now Playing</h2>
+
+  <p id="status">Waiting for a game...</p>
+
+  <div id="game"></div>
+
+  <br>
+
+  <button onclick="fullscreen()">Fullscreen</button>
+  <button onclick="stopGame()">Stop Game</button>
+</section>
+
+</main>
+
+<script>
+const DATA =
+  "https://cdn.emulatorjs.org/stable/data/";
+
+let db = null;
+let currentURL = null;
+
+const request = indexedDB.open("TriEmu4", 1);
+
+request.onupgradeneeded = event => {
+  const database = event.target.result;
+
+  database.createObjectStore("games", {
+    keyPath: "id",
+    autoIncrement: true
+  });
+};
+
+request.onsuccess = event => {
+  db = event.target.result;
+  showLibrary();
+};
+
+request.onerror = () => {
+  document.getElementById("status").textContent =
+    "Database error.";
+};
+
+const volume = document.getElementById("volume");
+
+volume.addEventListener("input", () => {
+  document.getElementById("volume-label").textContent =
+    volume.value + "%";
+});
+
+function addGame() {
+  const file =
+    document.getElementById("rom").files[0];
+
+  const system =
+    document.getElementById("system").value;
+
+  if (!file || !db) {
+    alert("Select a ROM first.");
+    return;
+  }
+
+  const extensions = {
+    nes: [".nes"],
+    n64: [".z64", ".n64", ".v64"],
+    nds: [".nds"],
+    snes: [".sfc", ".smc"]
+  };
+
+  const extension =
+    "." + file.name.split(".").pop().toLowerCase();
+
+  if (!extensions[system].includes(extension)) {
+    alert("That file extension doesn't match the selected console.");
+    return;
+  }
+
+  const reader = new FileReader();
+
+  reader.onload = () => {
+    const transaction =
+      db.transaction("games", "readwrite");
+
+    transaction.objectStore("games").add({
+      name: file.name,
+      system: system,
+      data: reader.result
+    });
+
+    transaction.oncomplete = () => {
+      showLibrary();
+
+      document.getElementById("status").textContent =
+        "Added " + file.name;
+    };
+  };
+
+  reader.readAsArrayBuffer(file);
+}
+
+function showLibrary() {
+  if (!db) return;
+
+  const library =
+    document.getElementById("library");
+
+  library.innerHTML = "";
+
+  const transaction =
+    db.transaction("games", "readonly");
+
+  const request =
+    transaction.objectStore("games").getAll();
+
+  request.onsuccess = () => {
+    const games = request.result;
+
+    if (!games.length) {
+      library.textContent = "Your library is empty.";
+      return;
+    }
+
+    games.forEach(game => {
+      const card = document.createElement("div");
+      card.className = "game-card";
+
+      const name = document.createElement("strong");
+      name.textContent = game.name;
+
+      const system = document.createElement("p");
+      system.textContent = game.system.toUpperCase();
+
+      const play = document.createElement("button");
+      play.textContent = "Play";
+      play.onclick = () => launchGame(game);
+
+      const remove = document.createElement("button");
+      remove.textContent = "Remove";
+      remove.onclick = () => deleteGame(game.id);
+
+      card.append(name, system, play, remove);
+      library.appendChild(card);
+    });
+  };
+}
+
+function deleteGame(id) {
+  const transaction =
+    db.transaction("games", "readwrite");
+
+  transaction.objectStore("games").delete(id);
+
+  transaction.oncomplete = showLibrary;
+}
+
+function launchGame(game) {
+  stopGame();
+
+  const ds = game.system === "nds";
+
+  document.body.classList.toggle("ds-mode", ds);
+
+  if (ds) {
+    enterDSMode();
+  }
+
+  currentURL = URL.createObjectURL(
+    new Blob([game.data])
+  );
+
+  const volumeValue =
+    Number(volume.value) / 100;
+
+  const dsJoystick = [
+    {
+      type: "zone",
+      location: "left",
+      left: "12%",
+      top: "50%",
+      joystickInput: false,
+      color: "#687cff",
+      inputValues: [4, 5, 6, 7]
+    },
+    {
+      type: "button",
+      text: "A",
+      id: "ds-a",
+      location: "right",
+      left: 70,
+      top: 50,
+      bold: true,
+      input_value: 0
+    },
+    {
+      type: "button",
+      text: "B",
+      id: "ds-b",
+      location: "right",
+      left: 20,
+      top: 100,
+      bold: true,
+      input_value: 8
+    },
+    {
+      type: "button",
+      text: "X",
+      id: "ds-x",
+      location: "right",
+      left: 20,
+      top: 0,
+      bold: true,
+      input_value: 1
+    },
+    {
+      type: "button",
+      text: "Y",
+      id: "ds-y",
+      location: "right",
+      left: 70,
+      top: 150,
+      bold: true,
+      input_value: 9
+    },
+    {
+      type: "button",
+      text: "START",
+      id: "ds-start",
+      location: "center",
+      left: 45,
+      fontSize: 15,
+      input_value: 3
+    },
+    {
+      type: "button",
+      text: "SELECT",
+      id: "ds-select",
+      location: "center",
+      left: -40,
+      fontSize: 15,
+      input_value: 2
+    }
+  ];
+
+  const iframe = document.createElement("iframe");
+
+  const config = {
+    core: game.system,
+    name: game.name,
+    url: currentURL,
+    volume: volumeValue,
+    isDS: ds,
+    controls: dsJoystick
+  };
+
+  iframe.srcdoc = `
+  <!DOCTYPE html>
+  <html>
+  <head>
+    <meta name="viewport"
+      content="width=device-width, initial-scale=1">
+    <style>
+      html,body,#game {
+        margin:0;
+        padding:0;
+        width:100%;
+        height:100%;
+        background:black;
+        overflow:hidden;
+      }
+    </style>
+  </head>
+  <body>
+
+    <div id="game"></div>
+
+    <script>
+      EJS_player = "#game";
+
+      EJS_core = ${JSON.stringify(config.core)};
+
+      EJS_gameUrl = ${JSON.stringify(config.url)};
+
+      EJS_gameName = ${JSON.stringify(config.name)};
+
+      EJS_pathtodata = ${JSON.stringify(DATA)};
+
+      EJS_volume = ${config.volume};
+
+      EJS_color = "#687cff";
+
+      EJS_controlScheme = ${JSON.stringify(config.core)};
+
+      EJS_startOnLoaded = true;
+
+      EJS_Buttons = {
+        saveState: true,
+        loadState: true,
+        saveSavFiles: true,
+        loadSavFiles: true,
+        fullscreen: true,
+        settings: true,
+        gamepad: true,
+        volume: true,
+        exitEmulation: true
+      };
+
+      ${config.isDS
+        ? "EJS_VirtualGamepadSettings = " +
+          JSON.stringify(config.controls) + ";"
+        : ""}
+
+    <\/script>
+
+    <script src="${DATA}loader.js"><\/script>
+
+  </body>
+  </html>
+  `;
+
+  document.getElementById("game")
+    .replaceChildren(iframe);
+
+  document.getElementById("status").textContent =
+    "Loading " + game.name + "...";
+}
+
+function checkController() {
+  const pads = navigator.getGamepads
+    ? navigator.getGamepads()
+    : [];
+
+  const connected = Array.from(pads)
+    .filter(pad => pad && pad.connected);
+
+  const output =
+    document.getElementById("controller-status");
+
+  if (!connected.length) {
+    output.textContent =
+      "No controller detected. Connect one and try again.";
+    return;
+  }
+
+  output.textContent =
+    connected.map(pad =>
+      "Connected: " + pad.id
+    ).join(" | ");
+}
+
+function enterDSMode() {
+  document.body.classList.add("ds-mode");
+
+  if (screen.orientation &&
+      screen.orientation.lock) {
+    screen.orientation.lock("landscape")
+      .catch(() => {});
+  }
+}
+
+function fullscreen() {
+  const iframe =
+    document.querySelector("#game iframe");
+
+  if (iframe) {
+    iframe.requestFullscreen?.();
+  }
+}
+
+function stopGame() {
+  document.getElementById("game").innerHTML = "";
+
+  if (currentURL) {
+    URL.revokeObjectURL(currentURL);
+    currentURL = null;
+  }
+
+  document.body.classList.remove("ds-mode");
+
+  if (screen.orientation?.unlock) {
+    screen.orientation.unlock();
+  }
+}
+</script>
+
+</body>
+</html>
